@@ -1,0 +1,10 @@
+
+quand on veux utiliser une fonction sur uniquement sur un modeule il faut utiliser static
+GCC est compulateur
+Pourc harger mles bibliothequue on utilise -lm lors de l'execution
+und ebogueur gdb et valgrind(tres important pour les programmes cryptographique
+pour par exemple les memoires desallouées)
+
+si quelqu'un veut attaquer un programmes on regarde des codes qui traite les erreurs
+
+

@@ -1,0 +1,135 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[french]{babel}
+\usepackage{amsmath,amssymb,amsthm,mathtools}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\usepackage{geometry}
+\geometry{margin=2.7cm}
+
+% --- Styles ---
+\newtheorem{exo}{Exercice}
+\newtheorem*{sol}{Indications / preuve esquissée}
+\newcommand{\Adv}{\mathsf{Adv}}
+\newcommand{\Game}{\mathsf{Game}}
+\newcommand{\negl}{\mathsf{negl}}
+\newcommand{\KeyGen}{\mathsf{KeyGen}}
+\newcommand{\Sign}{\mathsf{Sign}}
+\newcommand{\Verify}{\mathsf{Verify}}
+\newcommand{\Enc}{\mathsf{Enc}}
+\newcommand{\Dec}{\mathsf{Dec}}
+
+\title{Exercices de s\'ecurit\'e par les jeux (EUF--CMA, r\'eductions)}
+\author{(inspir\'e Katz \& Lindell)}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section*{Conventions}
+On travaille dans le cadre standard des jeux de s\'ecurit\'e : pour un sch\'ema $\Pi$, un adversaire PPT $A$ et un jeu $\Game_{\Pi}$, on note
+\[
+  \Adv_{A,\Pi} := \Pr[\Game_{\Pi}(A)=1].
+\]
+Un sch\'ema de \emph{signature} $\Pi=(\KeyGen,\Sign,\Verify)$ est \emph{$(t,\varepsilon)$-EUF--CMA s\^ur} si pour tout $A$ probabiliste s'ex\'ecutant en temps $\le t$ on a
+$\Adv_{A,\Pi}\le \varepsilon$ dans le jeu \textsc{Inforg04} (l'adversaire dispose d'un oracle de signature et doit forger une signature valide nouvelle).
+
+\bigskip
+
+% ===========================================================
+\begin{exo}[Concat\'enation de deux signatures]
+Soient deux sch\'emas de signatures $\Pi_1$ et $\Pi_2$ respectivement $(t_1,\varepsilon_1)$- et $(t_2,\varepsilon_2)$-EUF--CMA s\^urs. On d\'efinit $\Pi_{\text{concat}}$ par :
+\begin{align*}
+\KeyGen &:~ (sk_1,vk_1)\leftarrow \Pi_1.\KeyGen,~(sk_2,vk_2)\leftarrow \Pi_2.\KeyGen,~\text{retourner }((sk_1,sk_2),(vk_1,vk_2));\\
+\Sign((sk_1,sk_2),m) &:~ (\sigma_1,\sigma_2)\leftarrow (\Pi_1.\Sign(sk_1,m),~\Pi_2.\Sign(sk_2,m));\\
+\Verify((vk_1,vk_2),m,(\sigma_1,\sigma_2)) &:~ \text{retourner } \Pi_1.\Verify(vk_1,m,\sigma_1)\wedge \Pi_2.\Verify(vk_2,m,\sigma_2).
+\end{align*}
+Montrer qu'il existe une constante $K$ telle que $\Pi_{\text{concat}}$ est
+\[
+\big(\max(\varepsilon_1,\varepsilon_2),~\min(t_1,t_2)-K\big)\text{-EUF--CMA s\^ur}.
+\]
+\end{exo}
+
+\begin{sol}
+Soit $A^\ast$ un adversaire contre $\Pi_{\text{concat}}$. Construire $B_1$ qui attaque $\Pi_1$ :
+$B_1$ re\c{c}oit $vk_1$ et un oracle $\Sign_1(\cdot)$; il g\'en\`ere localement $(sk_2,vk_2)$; fournit $(vk_1,vk_2)$ \`a $A^\ast$; lorsqu'on lui demande $\Sign(m)$ pour le syst\`eme concat\'en\'e, $B_1$ renvoie $(\Sign_1(m),~\Pi_2.\Sign(sk_2,m))$. Si $A^\ast$ sort $(m^\ast,(\sigma_1^\ast,\sigma_2^\ast))$ valide avec $m^\ast$ nouveau, alors $B_1$ rend $(m^\ast,\sigma_1^\ast)$ et gagne contre $\Pi_1$.
+Simulation parfaite $\Rightarrow \Adv_{B_1,\Pi_1}=\Adv_{A^\ast,\Pi_{\text{concat}}}$ et $\mathrm{Temps}(B_1)=\mathrm{Temps}(A^\ast)+K$.
+Par s\'ecurit\'e de $\Pi_1$, $\Adv_{A^\ast,\Pi_{\text{concat}}}\le \varepsilon_1$ pour tout $A^\ast$ de temps $\le t_1-K$. De mani\`ere sym\'etrique, on obtient $\Adv_{A^\ast,\Pi_{\text{concat}}}\le \varepsilon_2$ si $\mathrm{Temps}(A^\ast)\le t_2-K$. En combinant, pour tout $A^\ast$ de temps $\le \min(t_1,t_2)-K$ :
+\[
+\Adv_{A^\ast,\Pi_{\text{concat}}}\le \max(\varepsilon_1,\varepsilon_2).
+\]
+\end{sol}
+
+\vspace{1ex}\hrule\vspace{1ex}
+
+% ===========================================================
+\begin{exo}[Signer puis chiffrer]
+Soient un sch\'ema de signature $\Pi_S$ (EUF--CMA s\^ur) et un sch\'ema de chiffrement \`a cl\'e publique $\Pi_E$ (IND--CPA s\^ur). D\'efinir $\Pi_{SE}$ :
+\begin{align*}
+\KeyGen &:~ (sk_S,vk_S)\leftarrow \Pi_S.\KeyGen,\ (sk_E,vk_E)\leftarrow \Pi_E.\KeyGen;\\
+\textsf{SignEnc}((sk_S,sk_E),m) &:~ \sigma\leftarrow \Pi_S.\Sign(sk_S,m);~ c\leftarrow \Pi_E.\Enc(vk_E,(m,\sigma));\\
+\textsf{VerifyDec}((vk_S,vk_E),c) &:~ (m,\sigma)\leftarrow \Pi_E.\Dec(sk_E,c);\ \text{return } \Pi_S.\Verify(vk_S,m,\sigma).
+\end{align*}
+Montrer que $\Pi_{SE}$ est EUF--CMA s\^ur si $\Pi_S$ est EUF--CMA et $\Pi_E$ IND--CPA.
+\end{exo}
+
+\begin{sol}
+Adversaire $A^\ast$ contre EUF de $\Pi_{SE}$. Construire $B$ contre EUF de $\Pi_S$ : $B$ re\c{c}oit $vk_S$ et un oracle $\Sign_S$. Il g\`ere localement $(sk_E,vk_E)$ et publie $(vk_S,vk_E)$ \`a $A^\ast$. Pour simuler $\textsf{SignEnc}(m)$, $B$ obtient $\sigma\leftarrow \Sign_S(m)$ puis chiffre localement $c\leftarrow \Enc(vk_E,(m,\sigma))$ et rend $c$. Quand $A^\ast$ rend une forge $c^\ast$ menant \`a $(m^\ast,\sigma^\ast)$ tel que $\Verify_S(vk_S,m^\ast,\sigma^\ast)=1$ et $m^\ast$ nouveau, $B$ rend $(m^\ast,\sigma^\ast)$. La vue d'$A^\ast$ est identique (chiffrement public). Donc $\Adv_{B,\Pi_S}=\Adv_{A^\ast,\Pi_{SE}}$ et la s\'ecurit\'e EUF de $\Pi_S$ conclut. L'hypoth\`ese IND--CPA assure que le chiffrement n'aide pas \`a d\'etecter d'enseignements suppl\'ementaires (mais ici $B$ chiffre lui-m\^eme, donc simulation parfaite).
+\end{sol}
+
+\vspace{1ex}\hrule\vspace{1ex}
+
+% ===========================================================
+\begin{exo}[Hash-then-Sign]
+Soit $\Pi$ un sch\'ema de signature EUF--CMA s\^ur et $H$ une fonction de hachage r\'esistante aux collisions. On d\'efinit
+\[
+\Pi_H:\quad \Sign_H(sk,m)=\Pi.\Sign(sk,H(m)),\qquad
+\Verify_H(vk,m,\sigma)=\Pi.\Verify(vk,H(m),\sigma).
+\]
+Montrer que $\Pi_H$ est EUF--CMA s\^ur si $\Pi$ est EUF--CMA et $H$ collision-r\'esistante.
+\end{exo}
+
+\begin{sol}
+Soit $A^\ast$ un adversaire qui gagne contre $\Pi_H$. Deux cas mutuellement exclusifs selon le message forg\'e $m^\ast$ :
+\begin{enumerate}[label=(\roman*)]
+\item $H(m^\ast)$ a d\'ej\`a \'et\'e sign\'e pour un autre message $m\neq m^\ast$ demand\'e \`a l'oracle. Alors $H(m)=H(m^\ast)$ avec $m\neq m^\ast$ est une collision: on construit un r\'educteur $B_{\text{coll}}$ qui relaie les requ\^etes de $A^\ast$, collecte $(m,m^\ast)$ et sort la collision. On obtient $\Pr[\text{collision}] \ge \Pr[\text{cas (i)}]$.
+\item $H(m^\ast)$ est \emph{nouveau}. Alors $(H(m^\ast),\sigma^\ast)$ est une forge pour $\Pi$. Construire $B_{\Pi}$ qui utilise $A^\ast$ et remplace l'oracle $\Sign_H(m)$ par $\Sign(H(m))$ de $\Pi$. Simulation parfaite $\Rightarrow \Pr[\text{forge }\Pi]\ge \Pr[\text{cas (ii)}]$.
+\end{enumerate}
+Par lemme de partition,
+\(
+\Pr[A^\ast\text{ gagne } \Pi_H]
+\le \Pr[\text{collision}] + \Pr[\text{forge }\Pi]
+\le \varepsilon_H + \varepsilon_\Pi.
+\)
+\end{sol}
+
+\vspace{1ex}\hrule\vspace{1ex}
+
+% ===========================================================
+\begin{exo}[R\'ep\'etition $r$ fois (majoration par union bound)]
+Soit $\Pi$ un sch\'ema $(t,\varepsilon)$-EUF--CMA s\^ur. On d\'efinit $\Pi_{\text{rep}}$ qui signe $r$ fois le m\^eme message avec des cl\'es ind\'ependantes :
+\[
+\KeyGen:~(sk_i,vk_i)\leftarrow \Pi.\KeyGen \text{ pour } i=1..r;\qquad
+\Sign:~\sigma_i\leftarrow \Pi.\Sign(sk_i,m);\qquad
+\Verify:~\bigwedge_{i=1}^r \Pi.\Verify(vk_i,m,\sigma_i).
+\]
+Montrer que $\Pi_{\text{rep}}$ est $(t-K,r\varepsilon)$-EUF--CMA s\^ur.
+\end{exo}
+
+\begin{sol}
+Si $A^\ast$ forge sur $\Pi_{\text{rep}}$ alors il existe un $i$ pour lequel $(m^\ast,\sigma_i^\ast)$ est une forge contre la $i$-\`eme instance de $\Pi$. Construire $B_i$ qui fixe l'instance $i$ comme challenge et g\'en\`ere localement les autres cl\'es. Par union bound,
+\[
+\Pr[A^\ast \text{ gagne } \Pi_{\text{rep}}]
+\le \sum_{i=1}^r \Pr[B_i \text{ gagne } \Pi] \le r\varepsilon,
+\]
+et le surco\^ut de simulation est une constante $K$ (g\'en\'erations et signatures locales).
+\end{sol}
+
+% ===========================================================
+\bigskip
+\noindent\textbf{Remarque pratique.}
+Dans toutes les preuves ci-dessus, la constante $K$ regroupe les co\^uts fixes de simulation (une ou plusieurs $\KeyGen$ locales, quelques appels \`a $\Sign$ locaux, tenue d'ensembles $Q$). Les jeux utilis\'es sont des simulations parfaites (pas de perte sauf $K$ en temps), d'o\`u des r\'eductions \emph{serr\'ees}.
+
+\end{document}
