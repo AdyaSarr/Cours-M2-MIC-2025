@@ -15,4 +15,5 @@ char *exporter_message(const mpz_t M_dechiffre_propre, size_t taille_message_cla
 int ecrire_mpz_fichier(const char *nom_fichier, const mpz_t cle);
 int lire_mpz_fichier(const char *nom_fichier, mpz_t cle);
 void desceller_message(mpz_t M_clair, const mpz_t M_chiffre_brut, const mpz_t E, const mpz_t N, unsigned long taille_message_clair);
+char *lire_message_fichier(const char *nom_fichier);
 #endif // RSA_H
