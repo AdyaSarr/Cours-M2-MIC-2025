@@ -17,7 +17,7 @@ void USART_Init(){
     UCSR0B = (1<<RXEN0)|(1<<TXEN0);
 
     // 8 bits de données, 1 Stop bit, Pas de Parité
-    UCSR0C = (1<<USBS0)|(1<<UCSZ00);
+    UCSR0C = (1 << UCSZ01) | (1 << UCSZ00);
 }
 
 //Initiatlisation de la LED
