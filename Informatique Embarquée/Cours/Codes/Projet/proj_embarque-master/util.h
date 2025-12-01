@@ -62,17 +62,86 @@ typedef struct {
 } GetAssertion_t;
 
 
+/**
+ * @brief Cette fonction permet de lire un octet sur le buffer
+ * @return retourne l'octet lu sur le buffer si cela existe sinon il retour la valeur EMPTY_VALUE
+ */
+uint8_t UART_getc();
 
-// Déclaration nécessaire pour le linkage avec micro-ecc
-// Le compilateur doit savoir que cette fonction existe.
-// Elle doit être définie selon la logique ADC que nous avons vue.
+/**
+ * @brief Cette fonction permet d'envoyer un seul octet
+ * @param data: valeur qui sera mis sur le registre UDR0 
+ */
+void UART_putc(uint8_t data);
+
+/**
+ * @brief Fonction d'initialisation de l'UART à 115200 bauds et le buffer
+ */
+void USART_Init_115200();
+
+/**
+ * @brief Fonction d'initialoisation du materiel et configuration de la LED
+ */
+void hardware_init();
+
+/**
+ * @brief Fonction pour envoyer un message d'erreur (STATUS_ERR_*)
+ * @param error_code: le code d'erreur a transmettre
+ */
+void send_error_response(uint8_t error_code);
+
+/**
+ * @brief Pour cette implémentation, nous allons utiliser la broche analogique ADC0 
+ * @brief comme source de bruit, ce qui est la même broche pour notre bouton (BUTTON_PIN)
+ * @brief Initialisation de l'ADC pour lire la source de bruit (ADC0)
+ */
+void ADC_init();
+
+/**
+ * @brief Extraction de l'Entropie:
+ * @brief Une fonction pour générer un octet aléatoire en prenant plusieurs échantillons rapides dans notre cas 8(pour extraire 1 bit par échantillon)
+ * @brief Nous ne conservons que les bits de poids faible (LSB) car ce sont les plus susceptibles de contenir du bruit imprévisible.
+ * @brief cette fonction génère un octet aléatoire en échantillonnant l'ADC plusieurs fois
+ * @return un octet aleatoire
+ */
+uint8_t generate_random_byte();
+
+/**
+ * @brief Prototype de la fonction d'aléatoire pour micro-ecc
+ * @brief Elle doit remplir le buffer p_dest avec size octets aléatoires avec l'alea extrat de l'ADC.
+ * @param p_dest le buffer a remplir
+ * @param size la taille
+ */
 int micro_ecc_random_bytes(uint8_t *p_dest, unsigned p_size);
 
-// Déclaration des fonctions EEPROM (définies dans l'explication précédente)
+/**
+ * @brief Cette fonction permet de:
+ * @brief Rechercher
+ * @brief Stocker
+ * @brief Remplacer
+ * @brief Une entrée
+ * @param sha1_app_id: le hash 
+ * @param credential_id: l'idetifiant du client
+ * @param private_key: la clé privée du client
+ * @return STATUS_OK ou STATUS_ERR_STORAGE_FULL
+ */
 uint8_t write_credential(const uint8_t sha1_app_id[APP_ID_SIZE], const uint8_t credential_id[CREDENTIAL_ID_SIZE], const uint8_t private_key[21]);
 
+/**
+ * @brief Cette fonction envoie la réponse de succés MakeCredential (STATUS_OK, ID, Clé Publique)
+ * @param credential_id: l'idetifiant du client
+ * @param public_key: la clé privée du client
+ */
 void send_make_credential_response(const uint8_t credential_id[CREDENTIAL_ID_SIZE], const uint8_t public_key[PUBLIC_KEY_SIZE]);
 
-// Déclaration de la fonction d'initialisation ADC
-void ADC_init();
+/**
+ * @brief Cette fonction permet de desactiver les peripheriques non utilisés pour economiser de l'energie
+ */
+void economy_energy();
+
+/**
+ * @brief Cette fonction permet de d'initialiser sur la main tout ce qui doit l'etre
+ */
+void init_ALL();
+
 #endif // UTIL_H

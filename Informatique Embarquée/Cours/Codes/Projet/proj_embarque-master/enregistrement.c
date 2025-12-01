@@ -4,8 +4,8 @@
 #include <util/delay.h>
 #include <stdint.h>
 #include <avr/interrupt.h>
-#include "ring_buffer.h" // Fichier externe
-#include "util.h"        // Fichier d'inclusion fourni par l'utilisateur
+#include "ring_buffer.h"
+#include "util.h" 
 #include <avr/sleep.h>
 #include <avr/eeprom.h>
 #include <string.h>
@@ -13,7 +13,11 @@
 
 
 
-// --- Constantes Timer 1 (pour 500 ms) ---
+
+// =======================================================================================================
+//                                          CONSTANTES TIMER 1 POUR 500ms
+// =======================================================================================================
+
 // F_CPU / (Prescaler * Intervalle_ms) = OCR1A + 1
 // 16,000,000 / (1024 * 500) = 31.25. 
 // Pour 500ms, nous cherchons le nombre de cycles : (16,000,000 / 1024) * 0.5s = 7812.5
@@ -21,45 +25,55 @@
 #define TIMER1_INTERVAL_MS 500
 #define OCR1A_VALUE 7812
 
-// --- Constantes UART et Buffer ---
+
+// =======================================================================================================
+//                                          CONSTANTES UART ET BUFFER
+// =======================================================================================================
 #define FOSC 16000000UL // 16 MHz
 #define BAUD 115200 
 #define MYUBRR (FOSC/16/BAUD)-1
-
 #define BUFFER_SIZE 32
 #define EMPTY_VALUE 0xFF // Valeur pour indiquer qu'aucune donnée n'est disponible(le prof avait proposer une autre methode: oublier)
-
-// ---- Déclaration globale du buffer---
 volatile struct ring_buffer buffer;
 volatile uint8_t buffer_data[BUFFER_SIZE];
 
-// --- Définition des Périphériques ---
+
+// =======================================================================================================
+//                                          DEFINITION DES PERIPHÉRIQUES
+// =======================================================================================================
 #define LED_PIN PB5 // Définit la broche logique de la LED : Bit 5 du PORT B
 #define BUTTON_PIN PC0 // Définit la broche logique du bouton : Bit 0 du PORT C (Broche A0 de l'Arduino).
 
 
-// --- Variables de Gestion du Temps (Timer 0) ---
+// =======================================================================================================
+//                                          VARIABLES DE GESTION DU TEMPS(TIMER 0)
+// =======================================================================================================
 volatile uint32_t timer_500ms_ticks = 0;
 volatile authenticator_state_t current_state = STATE_IDLE;
 uint32_t consent_timer_start_500ms_ticks = 0;
 uint32_t led_blink_timer_ms = 0;
 
 
-//La taille maximum d'entree que l'on peut stocker sur la memoire EEPROM du microcontroleur et la definittion de l'emplacement du tab de structure en EEPROM
+// =======================================================================================================
+//                                          VARIABLES POUR LE STOCKAGE SUR LE EEPROM
+// =======================================================================================================
+//La taille maximum d'entree que l'on peut stocker sur la memoire EEPROM du microcontroleur et la definittion de
+//l'emplacement du tab de structure en EEPROM
 #define MAX_CREDENTIALS 17
 CredentialEntry_t EEMEM CREDENTIALS_STORAGE[MAX_CREDENTIALS];
-
-//Taille des parametres des cles
-#define PUBLIC_KEY_SIZE 40
+#define PUBLIC_KEY_SIZE 40//Taille des parametres des cles
 
 
 
 
-// ============================================================
-// Fonctions UART et Interruption
-// ============================================================
+// =======================================================================================================
+//                                          FONCTIONS UART ET INTERRUPTION
+// =======================================================================================================
 
-//S'execute automatiquement et interrompt le main des d'un octet est entierement recu sur la liason serie (UART)
+/**
+ * @brief S'execute automatiquement et interrompt le main des qu'un octet est entierement recu sur la liason serie (UART)
+ * @param USART_RX_vect: 
+ */
 ISR(USART_RX_vect) {
     uint8_t data = UDR0;//lit l'octet recu sur le regsitre de données UART(UDR0)
     ring_buffer_push((struct ring_buffer*)&buffer, data);//ajoute l'octet lu sur le buffer circulair
@@ -68,12 +82,11 @@ ISR(USART_RX_vect) {
 // --- Timer 1 ISR (pour 500 ms) ---
 ISR(TIMER1_COMPA_vect) {
     if (current_state == STATE_WAIT_CONSENT) {
-        // Clignotement : Inverser l'état de la LED toutes les 500 ms
-        PORTB ^= (1 << LED_PIN); 
+        PORTB ^= (1 << LED_PIN);// Clignotement : Inverser l'état de la LED toutes les 500 ms
     }
-    // Incrémenter le compteur de cycles (500ms/cycle)
-    timer_500ms_ticks++; 
+    timer_500ms_ticks++;// Incrémenter le compteur de cycles (500ms/cycle)
 }
+
 
 void timer1_init(void) {
     // Mode CTC avec OCR1A
@@ -90,7 +103,6 @@ void timer1_init(void) {
     TIMSK1 = (1 << OCIE1A);
 }
 
-//Lecture d'un octet sur le buffer
 uint8_t UART_getc() {
     uint8_t data = EMPTY_VALUE;
     if (ring_buffer_pop((struct ring_buffer*)&buffer, &data) == 1) {
@@ -99,23 +111,22 @@ uint8_t UART_getc() {
         return EMPTY_VALUE;
     }
 }
-//fonction qui envoie un seul octet
+
 void UART_putc(uint8_t data) {
-    while (!(UCSR0A & (1 << UDRE0))); // Attente du buffer vide
+    while (!(UCSR0A & (1 << UDRE0)));
     UDR0 = data;
 }
 
-// Initialisation de l'UART à 115200 bauds
+
 void USART_Init_115200(){
     UBRR0H = (uint8_t)(MYUBRR>>8);//(H, L)Chargé la valeur calculée pour le baud 115200
     UBRR0L = (uint8_t)MYUBRR;
     UCSR0B = (1 << RXEN0) | (1 << TXEN0) | (1 << RXCIE0);
     UCSR0C = (1 << UCSZ01) | (1 << UCSZ00);
-    ring_buffer_init((struct ring_buffer*)&buffer, (uint8_t*)buffer_data, BUFFER_SIZE);//initialisation du buffer
+    ring_buffer_init((struct ring_buffer*)&buffer, (uint8_t*)buffer_data, BUFFER_SIZE);
 }
 
-// Initialisation du materiel:
-// Configuration de la LED (la Sortie)
+
 void hardware_init(){
     DDRB |= (1 << LED_PIN);//pour la led
     // Configuration du Bouton (Entrée avec une resistance de Pull-up)
@@ -123,21 +134,15 @@ void hardware_init(){
     PORTC |= (1 << BUTTON_PIN);
 }
 
-// Fonction utilitaire pour envoyer un message d'erreur (STATUS_ERR_*)
 void send_error_response(uint8_t error_code) {
     UART_putc(error_code); 
 }
 
+// =======================================================================================================
+//                                          GÉNÉRATION ET STOCKAGE DES CLÉS
+// =======================================================================================================
 
-// =================================================================================
-// Génération et Stockage des Clés
-// =================================================================================
 
-/**
- * Pour cette implémentation, nous allons utiliser la broche analogique ADC0 
- * comme source de bruit, ce qui est la même broche que votre bouton (BUTTON_PIN)
- * @brief Initialisation de l'ADC pour lire la source de bruit (ADC0)
- */
 void ADC_init() {
     ADMUX = (1 << REFS0);
     // Comme PC0 est notre bouton, on s'assure que cette broche peut être lue.
@@ -148,16 +153,9 @@ void ADC_init() {
     ADCSRA = (1 << ADEN) | (1 << ADPS2) | (1 << ADPS1) | (1 << ADPS0);
 }
 
-/**
- * Extraction de l'Entropie:
- * Une fonction pour générer un octet aléatoire en prenant plusieurs échantillons rapides
- * Nous ne conservons que les bits de poids faible (LSB) car ce sont les plus susceptibles de contenir du bruit imprévisible.
- * @brief cette fonction génère un octet aléatoire en échantillonnant l'ADC plusieurs fois
- */
+
 uint8_t generate_random_byte() {
     uint8_t random_byte = 0;
-    
-    // échantillonne l'ADC 8 fois pour extraire 1 bit par échantillon
     for (int i = 0; i < 8; i++) {
         // ON demarre la conversion (ADSC=1)
         ADCSRA |= (1 << ADSC); 
@@ -174,26 +172,14 @@ uint8_t generate_random_byte() {
     return random_byte;
 }
 
-/**
- * @brief Prototype de la fonction d'aléatoire pour micro-ecc
- * @brief Elle doit remplir le buffer p_dest avec size octets aléatoires.
- * @param p_dest le buffer a remplir
- * @param size la taille
- */
+
 int micro_ecc_random_bytes(uint8_t *p_dest, unsigned p_size) {
     for (unsigned i = 0; i < p_size; i++) {
-        // Remplir le buffer avec l'aléatoire extrait de l'ADC
         p_dest[i] = generate_random_byte();
     }
-    
-    // C'est ici que l'on pourrait ajouter l'événement bouton pour le "seeding"
-    // Exemple : si le consentement vient d'être donné, mélanger l'aléatoire
-    // avec un hachage de TCNT1 ou autre source de gigue.
-    
     return 1; // 1 pour succès, 0 pour échec
 }
 
-// Recherche, stocke ou remplace une entrée. Retourne STATUS_OK ou STATUS_ERR_STORAGE_FULL.
 uint8_t write_credential(const uint8_t sha1_app_id[APP_ID_SIZE], const uint8_t credential_id[CREDENTIAL_ID_SIZE], const uint8_t private_key[21]) {
     int empty_slot = -1;
     for (int i = 0; i < MAX_CREDENTIALS; i++) {
@@ -234,10 +220,9 @@ uint8_t write_credential(const uint8_t sha1_app_id[APP_ID_SIZE], const uint8_t c
     }
 }
 
-// Envoie la réponse de succès MakeCredential (STATUS_OK, ID, Clé Publique)
 void send_make_credential_response(const uint8_t credential_id[CREDENTIAL_ID_SIZE], const uint8_t public_key[PUBLIC_KEY_SIZE]) {
     
-    //Envoyer le statut OK (0x00)
+    //Envoyer le statut OK
     UART_putc(STATUS_OK);
     
     //Envoyer le credential_id (16 octets, little-endian)
@@ -251,19 +236,27 @@ void send_make_credential_response(const uint8_t credential_id[CREDENTIAL_ID_SIZ
     }
 }
 
-// =================================================================================
-// Initialisation et Attente de la Requête
-// =================================================================================
-int main()
-{
-    //Initialisation
+
+void economy_energy(){
+    PRR = (1 << PRTWI) | (1 << PRTIM2) | (1 << PRTIM0) | (1 << PRADC) | (1 << PRSPI);
+}
+
+
+void init_ALL(){
     hardware_init(); 
     USART_Init_115200(); 
     timer1_init();
     ADC_init();
-
-
     uECC_set_rng(micro_ecc_random_bytes);
+}
+
+// =======================================================================================================
+//                                          LA FONCTION PRINCIPALE 
+// =======================================================================================================
+int main()
+{
+    //Initialisation
+    init_ALL();
     // Configuration du mode veille
     set_sleep_mode(SLEEP_MODE_IDLE);
 
@@ -277,8 +270,7 @@ int main()
     
     current_state = STATE_IDLE; 
 
-    // Désactivation des périphériques non utilisés (économie d'énergie)
-    PRR = (1 << PRTWI) | (1 << PRTIM2) | (1 << PRTIM0) | (1 << PRADC) | (1 << PRSPI); 
+    economy_energy();
 
     uint8_t bytes_received = 0;
     while (1) {
