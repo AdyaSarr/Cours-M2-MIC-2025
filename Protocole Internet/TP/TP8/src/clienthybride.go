@@ -1,7 +1,6 @@
 package main
 
 import (
-	"crypto/tls"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -55,22 +54,6 @@ type BodyMessage struct {
 //=========================================================================================================================
 //											Partie client-serveu
 //=========================================================================================================================
-
-// Configuration du client pour ignorer la verification TLS
-func createClient() *http.Client {
-	// Crée une *copie* du transport par défaut pour la modification
-	tr := http.DefaultTransport.(*http.Transport).Clone()
-
-	// Modifie la configuration TLS de la copie
-	tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
-	return &http.Client{
-		Transport: tr,
-		Timeout:   50 * time.Second,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
-}
 
 func obtainListPeersAvailable(client *http.Client, urlcount string, nbPeers int) ([]InfoPerrs, error) {
 	//Prepartion de l'envoie de la requete GET
