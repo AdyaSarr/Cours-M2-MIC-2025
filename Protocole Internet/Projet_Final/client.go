@@ -13,6 +13,7 @@ import (
 	"io"
 	"log"
 	"math/big"
+	mrand "math/rand"
 	"net"
 	"net/http"
 	"strings"
@@ -286,7 +287,7 @@ func SerialisationDatagram(Id uint32, Type uint8, body []byte, privKey *ecdsa.Pr
 	return datagram, nil
 }
 
-func deserialisationUDP(packet []byte, publicKey *ecdsa.PublicKey) (*Datagram, error) {
+func DeserialisationUDP(packet []byte, publicKey *ecdsa.PublicKey) (*Datagram, error) {
 	if len(packet) < 7 {
 		return nil, fmt.Errorf("Erreur packet trop court(Taille%d)(deserialisationUDP)", len(packet))
 	}
@@ -320,6 +321,78 @@ func deserialisationUDP(packet []byte, publicKey *ecdsa.PublicKey) (*Datagram, e
 //-------------------------------------------------------------------------------------------------------------------------
 //										Fin: 1. Representation des données sur le reseau
 //-------------------------------------------------------------------------------------------------------------------------
+
+// -------------------------------------------------------------------------------------------------------------------------
+//  										2. Ouverture d'un socket d'ecoute et envoie de requete
+// -------------------------------------------------------------------------------------------------------------------------
+
+func StartUDPListener(addrSoc *net.UDPAddr) (*net.UDPConn, error) {
+	conn, err := net.ListenUDP("udp", addrSoc)
+	if err != nil {
+		return nil, fmt.Errorf("Erreur d'ecoute du client sur le port %v: %v", addrSoc, err)
+	}
+	return conn, nil
+}
+
+func SendRequestToThePeer(conn *net.UDPConn, addrSoc *net.UDPAddr, datagramUDP []byte) (int, error) {
+	nbOctet, err := conn.WriteToUDP(datagramUDP, addrSoc)
+	if err != nil {
+		return 0, fmt.Errorf("Erreur d'envoie du message(UDP:conn.Writ): %v", err)
+	}
+	return nbOctet, nil
+}
+
+//-------------------------------------------------------------------------------------------------------------------------
+//										Fin: 2. Ouverture d'un socket d'ecoute et envoie de requete
+//-------------------------------------------------------------------------------------------------------------------------
+
+// -------------------------------------------------------------------------------------------------------------------------
+//  										3. Les differents messages du protocole
+// -------------------------------------------------------------------------------------------------------------------------
+
+func generateRandomId() uint32 {
+	return mrand.Uint32()
+}
+
+func BuildHelloPacket(peerName string, extensions uint32, privKey *ecdsa.PrivateKey) ([]byte, error) {
+	requestId := generateRandomId()
+	requestType := uint8(1)
+	sizeBody := 4 + len(peerName)
+	requestBody := make([]byte, sizeBody)
+	binary.BigEndian.PutUint32(requestBody[0:4], extensions)
+	copy(requestBody[4:], []byte(peerName))
+	datagram, err := SerialisationDatagram(requestId, requestType, requestBody, privKey)
+	if err != nil {
+		return nil, fmt.Errorf("Erreur sur la construction du message Hello(BuildMsgBody): %v", err)
+	}
+	return datagram, nil
+}
+
+func BuildPingPacket() ([]byte, error) {
+	requestId := generateRandomId()
+	resquestType := uint8(0)
+	requestBody := []byte{}
+	datagram, err := SerialisationDatagram(requestId, resquestType, requestBody, nil)
+	if err != nil {
+		return nil, fmt.Errorf("Erreur sur la construction du message Ping(BuildPingPacket): %v", err)
+	}
+	return datagram, nil
+}
+
+func BuildRootRequestPacket(privKey *ecdsa.PrivateKey) ([]byte, error) {
+	requestId := generateRandomId()
+	requestType := uint8(2)
+	requestBody := []byte{}
+	datagram, err := SerialisationDatagram(requestId, requestType, requestBody, privKey)
+	if err != nil {
+		return nil, fmt.Errorf("Erreur construction message RootRequest(BuildRootRequestPacket): %v", err)
+	}
+	return datagram, nil
+}
+
+// -------------------------------------------------------------------------------------------------------------------------
+//  										Fin: 3. Les differents messages du protocole
+// -------------------------------------------------------------------------------------------------------------------------
 
 //=========================================================================================================================
 //											Fin: Code du protocole Pair-a-Pair: UDP
