@@ -17,18 +17,24 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
 // =========================================================================================================================
-//
-//	Definition des variables globales
-//
+//											Definition des variables globales
 // =========================================================================================================================
+
 const urlSrv = "https://jch.irif.fr:8443/peers/"
-const nickName = "A.S fait un test"
+const nickName = "SARR"
+const sizeMaxDatagram = 2048
 
 var ErrIgnorePack = errors.New("Packet Ignore: la clé publique est manquante")
+
+var peerMap = make(map[string]*PeerAssociation)
+var mapLock sync.RWMutex
+
+var resultReqOrRep Dispatcher
 
 //=========================================================================================================================
 //											Fin de la definition des variables globales
@@ -37,10 +43,9 @@ var ErrIgnorePack = errors.New("Packet Ignore: la clé publique est manquante")
 //-------------------------------------------------------------------------------------------------------------------------
 
 // =========================================================================================================================
-//
-//	Definition des Structures de Données
-//
+//											Definition des Structures de Données
 // =========================================================================================================================
+
 type StatusPeer uint8
 
 /**
@@ -80,6 +85,21 @@ type Datagram struct {
 	Length    uint16
 	Body      []byte
 	Signature []byte
+}
+
+type ResponseMessage struct {
+	Type uint8
+	Body []byte
+}
+
+type Dispatcher struct {
+	sync.RWMutex     // Protéger la map contre les accès concurrents
+	responseChannels map[uint32]chan ResponseMessage
+}
+
+type ContentBD struct {
+	sync.RWMutex
+	storage map[string][]byte
 }
 
 //=========================================================================================================================
@@ -300,20 +320,18 @@ func DeserialisationUDP(packet []byte, publicKey *ecdsa.PublicKey) (*Datagram, e
 		return nil, fmt.Errorf("Packet mal formé taille recu %d correspond pas a la taille declarer %d + %d", len(packet), 7, responseDatagram.Length)
 	}
 	responseDatagram.Body = packet[7 : 7+int(responseDatagram.Length)]
-	if len(packet[7+int(responseDatagram.Length):]) == 0 {
-		return &responseDatagram, nil
-	}
-	signature := packet[7+int(responseDatagram.Length):]
-	if len(signature) != 64 {
-		return nil, fmt.Errorf("La taille de la signature du packet(%d) est incorrecte", len(signature))
-	}
-	data := packet[0 : 7+int(responseDatagram.Length)]
-	if publicKey == nil {
-		return nil, fmt.Errorf("Erreur sur l'argument(publicKey) de la fonction deserialisationUDP qui est nul")
-	}
-	ok := verifySignature(publicKey, signature, data)
-	if !ok {
-		return nil, ErrIgnorePack
+	if len(packet) > 7+int(responseDatagram.Length) {
+		signature := packet[7+int(responseDatagram.Length):]
+		if len(signature) == 64 {
+			responseDatagram.Signature = signature
+			if publicKey != nil {
+				data := packet[0 : 7+int(responseDatagram.Length)]
+				ok := verifySignature(publicKey, signature, data)
+				if !ok {
+					return nil, ErrIgnorePack
+				}
+			}
+		}
 	}
 	return &responseDatagram, nil
 }
@@ -332,6 +350,18 @@ func StartUDPListener(addrSoc *net.UDPAddr) (*net.UDPConn, error) {
 		return nil, fmt.Errorf("Erreur d'ecoute du client sur le port %v: %v", addrSoc, err)
 	}
 	return conn, nil
+}
+
+func StartRead(client *http.Client, conn *net.UDPConn, privKey *ecdsa.PrivateKey) {
+	for {
+		buffer := make([]byte, sizeMaxDatagram)
+		nbOctet, addr, err := conn.ReadFromUDP(buffer)
+		if err != nil {
+			log.Printf("Erreur de lecture du message du pair %v (conn.ReadFromUDP): %v", addr, err)
+			continue
+		}
+		go ProcessPacket(client, conn, buffer[:nbOctet], addr, privKey)
+	}
 }
 
 func SendRequestToThePeer(conn *net.UDPConn, addrSoc *net.UDPAddr, datagramUDP []byte) (int, error) {
@@ -367,6 +397,18 @@ func BuildHelloPacket(peerName string, extensions uint32, privKey *ecdsa.Private
 	}
 	return datagram, nil
 }
+func BuildHelloReplyPacket(IdResponse uint32, peerName string, extensions uint32, privKey *ecdsa.PrivateKey) ([]byte, error) {
+	responseType := uint8(129)
+	sizeBody := 4 + len(peerName)
+	responseBody := make([]byte, sizeBody)
+	binary.BigEndian.PutUint32(responseBody[0:4], extensions)
+	copy(responseBody[4:], []byte(peerName))
+	datagram, err := SerialisationDatagram(IdResponse, responseType, responseBody, privKey)
+	if err != nil {
+		return nil, fmt.Errorf("Erreur sur la construction du message Hello(BuildMsgBody): %v", err)
+	}
+	return datagram, nil
+}
 
 func BuildPingPacket() ([]byte, error) {
 	requestId := generateRandomId()
@@ -375,6 +417,16 @@ func BuildPingPacket() ([]byte, error) {
 	datagram, err := SerialisationDatagram(requestId, resquestType, requestBody, nil)
 	if err != nil {
 		return nil, fmt.Errorf("Erreur sur la construction du message Ping(BuildPingPacket): %v", err)
+	}
+	return datagram, nil
+}
+
+func BuildPongReplyPacket(responseId uint32) ([]byte, error) {
+	responseType := uint8(128)
+	responseBody := []byte{}
+	datagram, err := SerialisationDatagram(responseId, responseType, responseBody, nil)
+	if err != nil {
+		return nil, fmt.Errorf("Erreur consteruction message Pong:ok(BuildPongReplyPacket)")
 	}
 	return datagram, nil
 }
@@ -390,8 +442,191 @@ func BuildRootRequestPacket(privKey *ecdsa.PrivateKey) ([]byte, error) {
 	return datagram, nil
 }
 
+func BuildDatumRequestPacket(hash []byte) ([]byte, error) {
+	requestId := generateRandomId()
+	requestType := uint8(3)
+	requestBody := make([]byte, 32)
+	copy(requestBody, hash)
+	datagram, err := SerialisationDatagram(requestId, requestType, requestBody, nil)
+	if err != nil {
+		return nil, fmt.Errorf("Erreur construction message DatumRequest(BuildDatumRequestPacket): %v", err)
+	}
+	return datagram, nil
+}
+
 // -------------------------------------------------------------------------------------------------------------------------
 //  										Fin: 3. Les differents messages du protocole
+// -------------------------------------------------------------------------------------------------------------------------
+
+// -------------------------------------------------------------------------------------------------------------------------
+//  										4. Processe de traitement des packet et getter
+// -------------------------------------------------------------------------------------------------------------------------
+
+func HandleRequest(client *http.Client, conn *net.UDPConn, addr *net.UDPAddr, datagram Datagram, privKey *ecdsa.PrivateKey) error {
+	var pubKey *ecdsa.PublicKey
+	if datagram.Type == 1 {
+		mapLock.RLock()
+		name := string(datagram.Body[4:])
+		assos, exist := peerMap[name]
+		mapLock.RUnlock()
+		if exist && assos.PublicKey != nil {
+			pubKey = assos.PublicKey
+		} else {
+			pubKeyWithoutParse, err := GetPublicKey(client, name)
+			if err != nil {
+				return err
+			}
+			pubKey = parsePubKey(pubKeyWithoutParse)
+		}
+		dataToVerify := make([]byte, 7+len(datagram.Body))
+		binary.BigEndian.PutUint32(dataToVerify[0:4], datagram.Id)
+		dataToVerify[4] = datagram.Type
+		binary.BigEndian.PutUint16(dataToVerify[5:7], datagram.Length)
+		copy(dataToVerify[7:], datagram.Body)
+		ok := verifySignature(pubKey, datagram.Signature, dataToVerify)
+		if !ok {
+			return fmt.Errorf("Erreur verfication signature(HandleRequest)")
+		}
+		mapLock.Lock()
+		newAssos := &PeerAssociation{
+			NickName:  name,
+			PublicKey: pubKey,
+			Status:    ASSOCIATED,
+			LastSeen:  time.Now(),
+		}
+		peerMap[name] = newAssos
+		mapLock.Unlock()
+		reply, err := BuildHelloReplyPacket(datagram.Id, nickName, 0, privKey)
+		if err != nil {
+			return fmt.Errorf("Erreur constrcution HelloReply(HandleRequest): %v", err)
+		}
+		_, err = SendRequestToThePeer(conn, addr, reply)
+		if err != nil {
+			return fmt.Errorf("Erreur envoie HelloReply(HandleRequest): %v", err)
+		}
+		return nil
+	} else if datagram.Type == 0 {
+		reply, err := BuildPongReplyPacket(datagram.Id)
+		if err != nil {
+			return fmt.Errorf("Erreur construction PongReply(HandleRequest): %v", err)
+		}
+		_, err = SendRequestToThePeer(conn, addr, reply)
+		if err != nil {
+			return fmt.Errorf("Erreur envoie PongReply(HandleRequest): %v", err)
+		}
+		return nil
+	} else {
+		return nil
+	}
+}
+
+func HandleResponse(datagram Datagram) error {
+
+	resultReqOrRep.RLock()
+	chanel, exist := resultReqOrRep.responseChannels[datagram.Id]
+	resultReqOrRep.RUnlock()
+	if !exist {
+		return fmt.Errorf("Erreur il y'a aucun canal qui attende cette reponse")
+	}
+	var reponse ResponseMessage
+	reponse.Type = datagram.Type
+	reponse.Body = datagram.Body
+	select {
+	case chanel <- reponse:
+	default:
+		log.Println("Personne pour recevoir la réponse")
+	}
+	return nil
+}
+
+func ProcessPacket(client *http.Client, conn *net.UDPConn, ReqOrRep []byte, addr *net.UDPAddr, privKey *ecdsa.PrivateKey) error {
+
+	datagram, err := DeserialisationUDP(ReqOrRep, nil)
+	if err != nil {
+		return fmt.Errorf("Erreur deserialisation(ProcessPacket): %v", err)
+	}
+	if datagram.Type < 128 {
+		err := HandleRequest(client, conn, addr, *datagram, privKey)
+		if err != nil {
+			return fmt.Errorf("Erreur traitement de la requete(ProcessPacket): %v", err)
+		}
+		return nil
+	} else {
+		err := HandleResponse(*datagram)
+		if err != nil {
+			return fmt.Errorf("Erreur traitement reponse: %v", err)
+		}
+		return nil
+	}
+}
+
+func DiscoveryRoutine(conn *net.UDPConn, serverAddr *net.UDPAddr, privKey *ecdsa.PrivateKey) error {
+	packetHello, err := BuildHelloPacket(nickName, 0, privKey)
+	if err != nil {
+		return err
+	}
+	idHello := binary.BigEndian.Uint32(packetHello[0:4])
+	chHello := make(chan ResponseMessage)
+	resultReqOrRep.Lock()
+	resultReqOrRep.responseChannels[idHello] = chHello
+	resultReqOrRep.Unlock()
+
+	SendRequestToThePeer(conn, serverAddr, packetHello)
+
+	select {
+	case resp := <-chHello:
+		resultReqOrRep.Lock()
+		delete(resultReqOrRep.responseChannels, idHello)
+		resultReqOrRep.Unlock()
+		if resp.Type == 129 {
+			return fmt.Errorf("Le serveur a refusé le Hello: %s", string(resp.Body))
+		}
+		log.Printf("Association réussie (Type reçu: %d)", resp.Type)
+	case <-time.After(3 * time.Second):
+		return fmt.Errorf("Timeout sur le Hello")
+	}
+
+	packetRoot, err := BuildRootRequestPacket(privKey)
+	if err != nil {
+		return err
+	}
+	id := binary.BigEndian.Uint32(packetRoot[0:4])
+	chRoot := make(chan ResponseMessage)
+	resultReqOrRep.Lock()
+	resultReqOrRep.responseChannels[id] = chRoot
+	resultReqOrRep.Unlock()
+
+	SendRequestToThePeer(conn, serverAddr, packetRoot)
+	select {
+	case resp := <-chRoot:
+		resultReqOrRep.Lock()
+		delete(resultReqOrRep.responseChannels, id)
+		resultReqOrRep.Unlock()
+		if resp.Type == 131 && len(resp.Body) == 32 {
+			log.Printf("SUCCÈS ! Root Hash (32 octets) reçu: %x", resp.Body)
+		} else {
+			log.Printf("Réponse Type %d inattendue: %s", resp.Type, string(resp.Body))
+		}
+	case <-time.After(5 * time.Second):
+		log.Printf("Timeout sur le RootRequest")
+	}
+	return nil
+}
+
+// -------------------------------------------------------------------------------------------------------------------------
+//  										Fin: 4. Processe de traitement des packet et getter
+// -------------------------------------------------------------------------------------------------------------------------
+
+// -------------------------------------------------------------------------------------------------------------------------
+//  										5. La gestion de la base de données de contenu(Arbre de Merkle)
+// -------------------------------------------------------------------------------------------------------------------------
+
+// -------------------------------------------------------------------------------------------------------------------------
+//  										5. La gestion de la base de données de contenu(Arbre de Merkle)
+// -------------------------------------------------------------------------------------------------------------------------
+
+// -------------------------------------------------------------------------------------------------------------------------
+//  									Fin: 4. Processe de traitement des packet
 // -------------------------------------------------------------------------------------------------------------------------
 
 //=========================================================================================================================
@@ -399,10 +634,9 @@ func BuildRootRequestPacket(privKey *ecdsa.PrivateKey) ([]byte, error) {
 //=========================================================================================================================
 
 // =========================================================================================================================
-//
-//	La fonction main
-//
+//												La fonction main
 // =========================================================================================================================
+
 // Configuration du client pour ignorer la verification TLS
 func createClient() *http.Client {
 	// Crée une *copie* du transport par défaut pour la modification
@@ -418,36 +652,38 @@ func createClient() *http.Client {
 		},
 	}
 }
+
 func main() {
 	privateKey, err := generateKey()
 	if err != nil {
-		log.Fatalf("Erreur de la generation de la clé privée: %v", err)
+		log.Fatalf("Erreur clé: %v", err)
 	}
-	publicKey, ok := privateKey.Public().(*ecdsa.PublicKey)
-	if !ok {
-		log.Fatalf("L'exctration de la clé publique a essoué")
-	}
-	pubKey := formatPubKey(publicKey)
+	publicKey := privateKey.Public().(*ecdsa.PublicKey)
 	client := createClient()
-	err = RegisterKey(client, nickName, pubKey)
-	if err != nil {
-		log.Fatalf("Erreur enregistrement du peer(%s): %v", nickName, err)
-	}
-	log.Printf("Enregistrer avec succes")
 
-	peers, err := GetPeerList(client)
-	if err != nil {
-		log.Fatalf("Erreur le serveur n'a pas transmis la liste des pairs: %v", err)
+	resultReqOrRep.responseChannels = make(map[uint32]chan ResponseMessage)
+
+	pubKeyBytes := formatPubKey(publicKey)
+	if err := RegisterKey(client, nickName, pubKeyBytes); err != nil {
+		log.Fatalf("Erreur Register: %v", err)
 	}
-	log.Printf("Les peers sont:\n%v\n", peers)
-	addrSoc, err := GetPeerAddresses(client, nickName)
+	log.Println("Pair enregistré avec succès sur le serveur REST")
+
+	addrLocal, _ := net.ResolveUDPAddr("udp", ":0")
+	conn, err := StartUDPListener(addrLocal)
 	if err != nil {
-		log.Fatalf("Erreur sur la recuperation des adresse de socket des pairs: %v", err)
+		log.Fatalf("Erreur UDP: %v", err)
 	}
-	log.Printf("Les adresses des pairs sont: \n%v\n", addrSoc)
-	pubk, err := GetPublicKey(client, nickName)
-	if err != nil {
-		log.Fatalf("Erreur sur la recuperation de la cle publique")
-	}
-	log.Printf("La cle publique est: %v", pubk)
+	defer conn.Close()
+	log.Printf("Ecoute UDP sur le port : %v", conn.LocalAddr())
+
+	go StartRead(client, conn, privateKey)
+
+	serverAddr, _ := net.ResolveUDPAddr("udp", "jch.irif.fr:8443")
+
+	log.Println("Envoi d'une RootRequest pour découvrir le réseau...")
+	go DiscoveryRoutine(conn, serverAddr, privateKey)
+	peerAddrs, err := GetPeerAddresses(client, "jch.irif.fr")
+	log.Printf("Les adresses: %v", peerAddrs)
+	select {}
 }
