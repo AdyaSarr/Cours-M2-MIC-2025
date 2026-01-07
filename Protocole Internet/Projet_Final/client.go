@@ -16,6 +16,8 @@ import (
 	mrand "math/rand"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -26,7 +28,7 @@ import (
 // =========================================================================================================================
 
 const urlSrv = "https://jch.irif.fr:8443/peers/"
-const nickName = "SARR"
+const nickName = "SR(1 adresse)"
 const sizeMaxDatagram = 2048
 
 var ErrIgnorePack = errors.New("Packet Ignore: la clé publique est manquante")
@@ -35,6 +37,14 @@ var peerMap = make(map[string]*PeerAssociation)
 var mapLock sync.RWMutex
 
 var resultReqOrRep Dispatcher
+
+var contentStorage = ContentBD{
+	storage: make(map[string][]byte),
+}
+
+var myRootHash []byte
+
+var downloadLimit = make(chan struct{}, 10)
 
 //=========================================================================================================================
 //											Fin de la definition des variables globales
@@ -442,6 +452,27 @@ func BuildRootRequestPacket(privKey *ecdsa.PrivateKey) ([]byte, error) {
 	return datagram, nil
 }
 
+func BuildRootReplyPacket(responseId uint32, rootHash []byte, privKey *ecdsa.PrivateKey) ([]byte, error) {
+	responseType := uint8(131)
+	responseBody := make([]byte, 32)
+	copy(responseBody, rootHash)
+	datagram, err := SerialisationDatagram(responseId, responseType, responseBody, privKey)
+	if err != nil {
+		return nil, fmt.Errorf("Erreur construction message RootReply(BuildRootReplyPacket): %v", err)
+	}
+	return datagram, nil
+}
+
+func BuildNoDatumReplyPacket(responseId uint32, privKey *ecdsa.PrivateKey) ([]byte, error) {
+	responseType := uint8(133)
+	responseBody := []byte{}
+	datagram, err := SerialisationDatagram(responseId, responseType, responseBody, privKey)
+	if err != nil {
+		return nil, fmt.Errorf("Erreur construction message NoDatumReply(BuildNoDatumReplyPacket): %v", err)
+	}
+	return datagram, nil
+}
+
 func BuildDatumRequestPacket(hash []byte) ([]byte, error) {
 	requestId := generateRandomId()
 	requestType := uint8(3)
@@ -464,7 +495,8 @@ func BuildDatumRequestPacket(hash []byte) ([]byte, error) {
 
 func HandleRequest(client *http.Client, conn *net.UDPConn, addr *net.UDPAddr, datagram Datagram, privKey *ecdsa.PrivateKey) error {
 	var pubKey *ecdsa.PublicKey
-	if datagram.Type == 1 {
+	switch datagram.Type {
+	case 1:
 		mapLock.RLock()
 		name := string(datagram.Body[4:])
 		assos, exist := peerMap[name]
@@ -505,7 +537,7 @@ func HandleRequest(client *http.Client, conn *net.UDPConn, addr *net.UDPAddr, da
 			return fmt.Errorf("Erreur envoie HelloReply(HandleRequest): %v", err)
 		}
 		return nil
-	} else if datagram.Type == 0 {
+	case 0:
 		reply, err := BuildPongReplyPacket(datagram.Id)
 		if err != nil {
 			return fmt.Errorf("Erreur construction PongReply(HandleRequest): %v", err)
@@ -515,7 +547,62 @@ func HandleRequest(client *http.Client, conn *net.UDPConn, addr *net.UDPAddr, da
 			return fmt.Errorf("Erreur envoie PongReply(HandleRequest): %v", err)
 		}
 		return nil
-	} else {
+	case 2:
+		reply, err := BuildRootReplyPacket(datagram.Id, myRootHash, privKey)
+		if err != nil {
+			return fmt.Errorf("Erreur construction RootReply(HandleRequest): %v", err)
+		}
+		_, err = SendRequestToThePeer(conn, addr, reply)
+		if err != nil {
+			return fmt.Errorf("Erreur envoie RootReply(HandleRequest): %v", err)
+		}
+		return nil
+	case 3:
+		mapLock.RLock()
+		var peerName string
+		for name, assos := range peerMap {
+			if assos.PublicKey != nil {
+				peerName = name
+				break
+			}
+		}
+		mapLock.RUnlock()
+		if peerName == "" {
+			return fmt.Errorf("Erreur: le pair demandeur est inconnu(HandleRequest)")
+		}
+		contentStorage.RLock()
+		hashKey := fmt.Sprintf("%x", datagram.Body)
+		data, exist := contentStorage.storage[hashKey]
+		contentStorage.RUnlock()
+		if !exist {
+			NoDatum, err := BuildNoDatumReplyPacket(datagram.Id, privKey)
+			if err != nil {
+				return fmt.Errorf("Erreur construction NoDatumReply(HandleRequest): %v", err)
+			}
+			_, err = SendRequestToThePeer(conn, addr, NoDatum)
+			if err != nil {
+				return fmt.Errorf("Erreur envoie NoDatumReply(HandleRequest): %v", err)
+			}
+			return nil
+		}
+		responseBody := make([]byte, 32+len(data))
+		hashData := sha256.Sum256(data)
+		copy(responseBody[0:32], hashData[:])
+		nodeType := data[0]
+		if nodeType != 0 && nodeType != 1 && nodeType != 2 && nodeType != 3 {
+			return fmt.Errorf("Erreur: Type de noeud inconnu dans la donnée stockée")
+		}
+		copy(responseBody[32:], data)
+		responsePacket, err := SerialisationDatagram(datagram.Id, 132, responseBody, nil)
+		if err != nil {
+			return fmt.Errorf("Erreur construction DatumReply(HandleRequest): %v", err)
+		}
+		_, err = SendRequestToThePeer(conn, addr, responsePacket)
+		if err != nil {
+			return fmt.Errorf("Erreur envoie DatumReply(HandleRequest): %v", err)
+		}
+		return nil
+	default:
 		return nil
 	}
 }
@@ -556,6 +643,13 @@ func ProcessPacket(client *http.Client, conn *net.UDPConn, ReqOrRep []byte, addr
 		if err != nil {
 			return fmt.Errorf("Erreur traitement reponse: %v", err)
 		}
+		mapLock.RLock()
+		assos, exist := peerMap[string(addr.String())]
+		mapLock.RUnlock()
+		if !exist {
+			return fmt.Errorf("Erreur: le pair demandeur est inconnu(HandleResponse)")
+		}
+		assos.LastSeen = time.Now()
 		return nil
 	}
 }
@@ -604,6 +698,10 @@ func DiscoveryRoutine(conn *net.UDPConn, serverAddr *net.UDPAddr, privKey *ecdsa
 		resultReqOrRep.Unlock()
 		if resp.Type == 131 && len(resp.Body) == 32 {
 			log.Printf("SUCCÈS ! Root Hash (32 octets) reçu: %x", resp.Body)
+			_, err := DownloadDatum(conn, serverAddr, resp.Body, "")
+			if err != nil {
+				log.Printf("Erreur DownloadDatum: %v", err)
+			}
 		} else {
 			log.Printf("Réponse Type %d inattendue: %s", resp.Type, string(resp.Body))
 		}
@@ -613,6 +711,40 @@ func DiscoveryRoutine(conn *net.UDPConn, serverAddr *net.UDPAddr, privKey *ecdsa
 	return nil
 }
 
+func maintainConnPairs(conn *net.UDPConn) {
+	for {
+		time.Sleep(1 * time.Minute)
+		mapLock.Lock()
+		for name, assos := range peerMap {
+			if assos.Status != ASSOCIATED {
+				continue
+			}
+			if time.Since(assos.LastSeen) > 5*time.Minute {
+				log.Printf("Le pair %s est marqué comme OFFLINE", name)
+				assos.Status = OFFLINE
+			} else if time.Since(assos.LastSeen) > 3*time.Minute {
+				ping, err := BuildPingPacket()
+				if err != nil {
+					log.Printf("Erreur construction Ping(maintainConnPairs): %v", err)
+					continue
+				}
+				if len(assos.Addresses) > 0 {
+					for _, addr := range assos.Addresses {
+						_, err := SendRequestToThePeer(conn, &addr, ping)
+						if err != nil {
+							log.Printf("Erreur envoie Ping au pair %s(maintainConnPairs): %v", name, err)
+						} else {
+							log.Printf("Ping envoyé au pair %s pour maintenir la connexion", name)
+						}
+					}
+					assos.LastSeen = time.Now()
+				}
+			}
+		}
+		mapLock.Unlock()
+	}
+}
+
 // -------------------------------------------------------------------------------------------------------------------------
 //  										Fin: 4. Processe de traitement des packet et getter
 // -------------------------------------------------------------------------------------------------------------------------
@@ -620,6 +752,187 @@ func DiscoveryRoutine(conn *net.UDPConn, serverAddr *net.UDPAddr, privKey *ecdsa
 // -------------------------------------------------------------------------------------------------------------------------
 //  										5. La gestion de la base de données de contenu(Arbre de Merkle)
 // -------------------------------------------------------------------------------------------------------------------------
+
+func ParseNode(conn *net.UDPConn, serverAddr *net.UDPAddr, data []byte, currentPath string) error {
+	if len(data) == 0 {
+		return fmt.Errorf("Erreur taille(%d) de la donnée(ParseNode)", 0)
+	}
+	nodeType := data[0]
+	payload := data[1:]
+	switch nodeType {
+	case 0:
+		if len(payload) > 1024 {
+			return fmt.Errorf("Chunk trop grand: %d octets", len(payload))
+		}
+		filePath := "downloads/" + currentPath
+		dir := filepath.Dir(filePath)
+		err := os.MkdirAll(dir, 0755)
+		if err != nil {
+			return fmt.Errorf("Erreur création dossier %s: %v", dir, err)
+		}
+
+		f, err := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			return fmt.Errorf("Erreur ouverture fichier %s: %v", filePath, err)
+		}
+		defer f.Close()
+
+		_, err = f.Write(payload)
+		if err != nil {
+			return fmt.Errorf("Erreur écriture dans %s: %v", filePath, err)
+		}
+
+		log.Printf("Morceau ajouté au fichier : %s", filePath)
+		return nil
+	case 1:
+		if len(payload)%64 != 0 {
+			return fmt.Errorf("Erreur: la taille directory n'est pas multiple de 64: %d", len(payload))
+		}
+		numEntries := len(payload) / 64
+		for i := 0; i < numEntries; i++ {
+			entryHash := payload[i*64 : (i+1)*64]
+			name := string(bytes.Trim(entryHash[0:32], "\x00"))
+			hashValue := entryHash[32:64]
+			DownloadDatum(conn, serverAddr, hashValue, currentPath+"/"+name)
+		}
+	case 2, 3:
+		if len(payload)%32 != 0 {
+			return fmt.Errorf("Taille BigNode ou BigDirectory invalide: %d", len(payload))
+		}
+		numChildren := len(payload) / 32
+		for i := 0; i < numChildren; i++ {
+			childHash := payload[i*32 : (i+1)*32]
+			_, err := DownloadDatum(conn, serverAddr, childHash, currentPath)
+			if err != nil {
+				log.Printf("Erreur morceau %d du fichier %s : %v", i, currentPath, err)
+			}
+		}
+		log.Printf("Nœud structurel (%d) reçu avec %d enfants", nodeType, len(payload)/32)
+	default:
+		return fmt.Errorf("Erreur: Type de noeud inconnu")
+	}
+	return nil
+}
+
+func DownloadDatum(conn *net.UDPConn, serverAddr *net.UDPAddr, hash []byte, fileName string) ([]byte, error) {
+	downloadLimit <- struct{}{}
+	defer func() { <-downloadLimit }()
+	packetDatum, err := BuildDatumRequestPacket(hash)
+	if err != nil {
+		return nil, err
+	}
+	idDatum := binary.BigEndian.Uint32(packetDatum[0:4])
+	chDatum := make(chan ResponseMessage)
+	resultReqOrRep.Lock()
+	resultReqOrRep.responseChannels[idDatum] = chDatum
+	resultReqOrRep.Unlock()
+	var data []byte
+	SendRequestToThePeer(conn, serverAddr, packetDatum)
+	select {
+	case datumResp := <-chDatum:
+		resultReqOrRep.Lock()
+		delete(resultReqOrRep.responseChannels, idDatum)
+		resultReqOrRep.Unlock()
+		if datumResp.Type == 132 {
+			log.Printf("Donnée reçue (%d octets)", len(datumResp.Body))
+			hashDataRcv := sha256.Sum256(datumResp.Body[32:])
+			if !bytes.Equal(hashDataRcv[:], datumResp.Body[:32]) {
+				return nil, fmt.Errorf("Erreur: le hash de la donnée reçue ne correspond pas au hash inclus dans la donnée")
+			}
+			if !bytes.Equal(hashDataRcv[:], hash) {
+				return nil, fmt.Errorf("Erreur: le hash de la donnée reçue ne correspond pas au Root Hash")
+			}
+			err := ParseNode(conn, serverAddr, datumResp.Body[32:], fileName)
+			if err != nil {
+				log.Printf("Erreur ParseNode: %v", err)
+			}
+			data = datumResp.Body
+		} else {
+			log.Printf("Réponse DatumRequest inattendue: Type %d", datumResp.Type)
+		}
+	case <-time.After(5 * time.Second):
+		log.Printf("Timeout sur le DatumRequest")
+	}
+	return data, nil
+}
+
+func Store(data []byte) ([]byte, error) {
+	if len(data) <= 0 {
+		return nil, fmt.Errorf("Erreur taille(%d) de la donnée(Store)", 0)
+	}
+	if len(data) > 1024 {
+		return nil, fmt.Errorf("Erreur taille(%d) de la donnée(Store) dépasse 1024", len(data))
+	}
+	contentStorage.Lock()
+	hash := sha256.Sum256(data)
+	hashKey := fmt.Sprintf("%x", hash[:])
+	contentStorage.storage[hashKey] = data
+	contentStorage.Unlock()
+	return hash[:], nil
+}
+
+func CutFileIntoChunks(filePath string) ([]byte, error) {
+	fileData, err := os.ReadFile(filePath)
+	if err != nil {
+		return nil, err
+	}
+
+	var currentHashes [][]byte
+	for i := 0; i < len(fileData); i += 1024 {
+		end := i + 1024
+		if end > len(fileData) {
+			end = len(fileData)
+		}
+		h, _ := Store(append([]byte{0}, fileData[i:end]...))
+		currentHashes = append(currentHashes, h)
+	}
+
+	for len(currentHashes) > 1 {
+		var nextLevel [][]byte
+		for i := 0; i < len(currentHashes); i += 31 {
+			end := i + 31
+			if end > len(currentHashes) {
+				end = len(currentHashes)
+			}
+
+			node := []byte{2}
+			for _, h := range currentHashes[i:end] {
+				node = append(node, h...)
+			}
+			parentHash, _ := Store(node)
+			nextLevel = append(nextLevel, parentHash)
+		}
+		currentHashes = nextLevel
+	}
+	return currentHashes[0], nil
+}
+
+func ExportCatsPhotos() ([]byte, error) {
+	entries, err := os.ReadDir("Photos_Chats")
+	if err != nil {
+		return nil, fmt.Errorf("Erreur lecture dossier Photos_Chats: %v", err)
+	}
+	var dirBody []byte
+	dirBody = append(dirBody, byte(1))
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		filePath := "Photos_Chats/" + entry.Name()
+
+		hash, err := CutFileIntoChunks(filePath)
+		if err != nil {
+			log.Printf("Erreur export %s: %v", entry.Name(), err)
+			continue
+		}
+		entryBytes := make([]byte, 64)
+		copy(entryBytes[0:32], []byte(entry.Name()))
+		copy(entryBytes[32:64], hash)
+		dirBody = append(dirBody, entryBytes...)
+	}
+	bigDir := append([]byte{3}, dirBody...)
+	return Store(bigDir)
+}
 
 // -------------------------------------------------------------------------------------------------------------------------
 //  										5. La gestion de la base de données de contenu(Arbre de Merkle)
@@ -668,7 +981,13 @@ func main() {
 		log.Fatalf("Erreur Register: %v", err)
 	}
 	log.Println("Pair enregistré avec succès sur le serveur REST")
+	myRootHash, err = ExportCatsPhotos()
+	if err != nil {
+		log.Fatalf("Erreur ExportCatsPhotos: %v", err)
+	}
 
+	log.Printf("Root Hash de mes photos de chats: %x", myRootHash)
+	os.MkdirAll("downloads", 0755)
 	addrLocal, _ := net.ResolveUDPAddr("udp", ":0")
 	conn, err := StartUDPListener(addrLocal)
 	if err != nil {
@@ -676,7 +995,7 @@ func main() {
 	}
 	defer conn.Close()
 	log.Printf("Ecoute UDP sur le port : %v", conn.LocalAddr())
-
+	go maintainConnPairs(conn)
 	go StartRead(client, conn, privateKey)
 
 	serverAddr, _ := net.ResolveUDPAddr("udp", "jch.irif.fr:8443")
