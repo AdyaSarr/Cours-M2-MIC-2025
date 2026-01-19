@@ -4,10 +4,8 @@ import (
 	"crypto/ecdsa"
 	"crypto/tls"
 	"errors"
-	"log"
 	"net"
 	"net/http"
-	"os"
 	"sync"
 	"time"
 )
@@ -17,7 +15,11 @@ import (
 // =========================================================================================================================
 
 const urlSrv = "https://jch.irif.fr:8443/peers/"
-const nickName = "et"
+
+var connGlobal *net.UDPConn
+var privateKeyGlobal *ecdsa.PrivateKey
+var nickName string
+
 const sizeMaxDatagram = 2048
 
 var ErrIgnorePack = errors.New("Packet Ignore: la clé publique est manquante")
@@ -109,56 +111,14 @@ func createClient() *http.Client {
 }
 
 func main() {
-	// 1. Initialisation de la cryptographie
-	privateKey, _ := GenerateKey()
-	publicKey := privateKey.Public().(*ecdsa.PublicKey)
-	pubKeyBytes := FormatPubKey(publicKey)
+	privateKeyGlobal, _ = GenerateKey()
+	addrLocal, _ := net.ResolveUDPAddr("udp", ":0")
+	connGlobal, _ = StartUDPListener(addrLocal)
 
-	// 2. Initialisation du dispatcher
+	client := createClient()
 	resultReqOrRep.responseChannels = make(map[uint32]chan ResponseMessage)
 
-	// 3. Inscription sur le serveur REST
-	client := createClient()
-	err := RegisterKey(client, nickName, pubKeyBytes)
-	if err != nil {
-		log.Fatalf("Erreur Register: %v", err)
-	}
-
-	go func() {
-		for {
-			time.Sleep(20 * time.Minute) // Attendre 20 minutes
-			log.Println("Rafraîchissement du NickName sur le serveur REST...")
-			err := RegisterKey(client, nickName, pubKeyBytes)
-			if err != nil {
-				log.Printf("Erreur lors du rafraîchissement : %v", err)
-			} else {
-				log.Println("NickName maintenu avec succès.")
-			}
-		}
-	}()
-
-	// 4. Préparation des données locales (Merkle Tree)
-	myRootHash, _ = ExportCatsPhotos()
-	log.Printf("Mon Root Hash: %x", myRootHash)
-
-	// 5. Configuration Réseau UDP
-	os.MkdirAll("downloads", 0755)
-	addrLocal, _ := net.ResolveUDPAddr("udp", ":0") // Port aléatoire
-	conn, err := StartUDPListener(addrLocal)
-	if err != nil {
-		log.Fatalf("Erreur UDP: %v", err)
-	}
-	defer conn.Close()
-
-	// 6. Lancement des services en arrière-plan
-	go maintainConnPairs(conn)             // Maintenance des pairs
-	go StartRead(client, conn, privateKey) // Écoute réseau UDP
-
-	// 7. Démarrage du protocole de découverte (P2P)
-	serverAddr, _ := net.ResolveUDPAddr("udp", "jch.irif.fr:8443")
-	log.Println("Démarrage de la Discovery Routine...")
-	go DiscoveryRoutine(conn, serverAddr, privateKey)
-
-	// Bloquer le main pour laisser les goroutines travailler
-	select {}
+	go StartRead(client, connGlobal, privateKeyGlobal)
+	go maintainConnPairs(connGlobal)
+	StartGlobalInterface(client)
 }
