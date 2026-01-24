@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math/rand/v2"
+	"net"
 )
 
 func SerialisationDatagram(Id uint32, Type uint8, body []byte, privKey *ecdsa.PrivateKey) ([]byte, error) {
@@ -153,4 +154,18 @@ func BuildDatumRequestPacket(hash []byte) ([]byte, error) {
 		return nil, fmt.Errorf("Erreur construction message DatumRequest(BuildDatumRequestPacket): %v", err)
 	}
 	return datagram, nil
+}
+
+func BuildForwardPacket(targetAddr *net.UDPAddr, originalDatagram []byte) ([]byte, error) {
+	requestId := generateRandomId()
+	requestType := uint8(4)
+	ip := targetAddr.IP.To4()
+	if ip == nil {
+		ip = targetAddr.IP.To16()
+	}
+	body := make([]byte, len(ip)+2+len(originalDatagram))
+	copy(body[0:len(ip)], ip)
+	binary.BigEndian.PutUint16(body[len(ip):len(ip)+2], uint16(targetAddr.Port))
+	copy(body[len(ip)+2:], originalDatagram)
+	return SerialisationDatagram(requestId, requestType, body, nil)
 }

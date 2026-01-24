@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"html/template"
 	"log"
+	"net"
 	"net/http"
 )
 
@@ -12,7 +13,7 @@ const loginPage = `
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Connexion P2P Merkle</title>
+    <title>Entrez votre Pseudo</title>
     <style>
         body { font-family: sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; background: #f0f2f5; margin:0; }
         .card { background: white; padding: 2rem; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); text-align: center; }
@@ -135,6 +136,11 @@ func StartGlobalInterface(client *http.Client) {
 				addrs, _ := GetPeerAddresses(client, target)
 				if len(addrs) > 0 {
 					DiscoveryRoutine(connGlobal, &addrs[0], privateKeyGlobal)
+					relaisAddr, _ := net.ResolveUDPAddr("udp", "jch.irif.fr:8443")
+					helloPack, _ := BuildHelloPacket(nickName, 1, privateKeyGlobal)
+					forwardPack, _ := BuildForwardPacket(&addrs[0], helloPack)
+					log.Printf("NAT: Envoi du relais via jch.irif.fr pour joindre %s", target)
+					SendRequestToThePeer(connGlobal, relaisAddr, forwardPack)
 				}
 			}()
 			fmt.Fprintf(w, "<html><body style='text-align:center;font-family:sans-serif;'><h1>Requête envoyée !</h1><p>Le téléchargement de l'arbre Merkle de <b>%s</b> a commencé.</p><a href='/'>Retour au Dashboard</a></body></html>", target)
@@ -160,5 +166,13 @@ func setupP2P(name string, client *http.Client) {
 	err := RegisterKey(client, nickName, pubKeyBytes)
 	if err != nil {
 		log.Printf("Erreur RegisterKey: %v", err)
+	}
+
+	serverUDPAddr, _ := net.ResolveUDPAddr("udp", "jch.irif.fr:8443")
+	// On envoie un Hello avec extension 1 (NAT Traversal)
+	helloPacket, err := BuildHelloPacket(nickName, 1, privateKeyGlobal)
+	if err == nil {
+		SendRequestToThePeer(connGlobal, serverUDPAddr, helloPacket)
+		log.Printf("UDP: Enregistrement initial envoyé au serveur")
 	}
 }

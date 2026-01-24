@@ -74,7 +74,7 @@ func HandleRequest(client *http.Client, conn *net.UDPConn, addr *net.UDPAddr, da
 		}
 		peerMap[name] = newAssos
 		mapLock.Unlock()
-		reply, err := BuildHelloReplyPacket(datagram.Id, nickName, 0, privKey)
+		reply, err := BuildHelloReplyPacket(datagram.Id, nickName, 1, privKey)
 		if err != nil {
 			return fmt.Errorf("Erreur constrcution HelloReply(HandleRequest): %v", err)
 		}
@@ -84,6 +84,7 @@ func HandleRequest(client *http.Client, conn *net.UDPConn, addr *net.UDPAddr, da
 		}
 		return nil
 	case 0:
+		log.Printf("NAT [Succès]: Contact UDP reçu de %v", addr)
 		reply, err := BuildPongReplyPacket(datagram.Id)
 		if err != nil {
 			return fmt.Errorf("Erreur construction PongReply(HandleRequest): %v", err)
@@ -147,6 +148,34 @@ func HandleRequest(client *http.Client, conn *net.UDPConn, addr *net.UDPAddr, da
 		if err != nil {
 			return fmt.Errorf("Erreur envoie DatumReply(HandleRequest): %v", err)
 		}
+		return nil
+	case 132:
+		var ipSize int
+		if len(datagram.Body) > 6 && len(datagram.Body) < 22 {
+			ipSize = 4
+		} else {
+			ipSize = 16
+		}
+
+		offset := ipSize + 2
+		if len(datagram.Body) > offset {
+			actualPayload := datagram.Body[offset:]
+			return ProcessPacket(client, conn, actualPayload, addr, privKey)
+		}
+		return nil
+	case 5:
+		if len(datagram.Body) >= 6 {
+			targetIP := net.IP(datagram.Body[0:4])
+			targetPort := binary.BigEndian.Uint16(datagram.Body[4:6])
+			targetAddr := &net.UDPAddr{IP: targetIP, Port: int(targetPort)}
+
+			log.Printf("NAT [Étape 1]: Reçu demande de perçage du serveur pour joindre %v", targetAddr)
+			ping, _ := BuildPingPacket()
+			SendRequestToThePeer(conn, targetAddr, ping)
+			log.Printf("NAT [Étape 2]: Ping de perçage envoyé vers %v. En attente de contact direct...", targetAddr)
+		}
+		reply, _ := BuildPongReplyPacket(datagram.Id)
+		SendRequestToThePeer(conn, addr, reply)
 		return nil
 	default:
 		return nil

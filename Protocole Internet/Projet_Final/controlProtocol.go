@@ -109,7 +109,7 @@ func GetPublicKey(client *http.Client, peerName string) ([]byte, error) {
 }
 
 func DiscoveryRoutine(conn *net.UDPConn, serverAddr *net.UDPAddr, privKey *ecdsa.PrivateKey) error {
-	packetHello, err := BuildHelloPacket(nickName, 0, privKey)
+	packetHello, err := BuildHelloPacket(nickName, 1, privKey)
 	if err != nil {
 		return err
 	}
