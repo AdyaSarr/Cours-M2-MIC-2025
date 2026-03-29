@@ -497,9 +497,60 @@ int inverse_mod(const int entier,const int mod){
         return -1;
     }
     inv = result->x;
+    if (inv < 0) {
+        inv += mod;
+    }
     free(result);
     return inv;
 }
+
+
+int solution_TR_Chinois(parametres_TRC *params){
+    long long som = 0;
+    long long N = 1;
+    int solution = -1;
+
+    // Verifier que tous les n_i sont premiers deux a deux entre eux
+    for (size_t i = 0; i < TAILLE_SYSTEME; i++)
+    {
+        for (size_t j = i+1; j < TAILLE_SYSTEME; j++)
+        {
+            int test = algo_Euclide_accelerer(params->les_n_i[i], params->les_n_i[j]);
+            if (test!=1)
+            {
+                fprintf(stdout, "Les n_i doivent etre premiers deux a deux mais la tel n'est pas le cas regarde les valeurs : %d et %d\n", params->les_n_i[i], params->les_n_i[j]);
+                return solution;
+            }
+        }
+    }
+    
+    for (size_t i = 0; i < TAILLE_SYSTEME; i++)
+    {
+        N *=params->les_n_i[i];
+    }
+    for (size_t i = 0; i < TAILLE_SYSTEME; i++)
+    {
+        long long a_i_reduit = params->les_a_i[i]%params->les_n_i[i];
+        long long M_i = N/params->les_n_i[i];
+        int M_i_mod_n_i = (int)(M_i % params->les_n_i[i]);
+        int inver_M_i = inverse_mod(M_i_mod_n_i, params->les_n_i[i]);
+        if (inver_M_i < 0)
+        {
+            fprintf(stdout, "L'inverse %lld n'existe pas il y'a un probleme sur les parametres car l'inverse devrais exister car PGCD(M_i, n_i) = 1\n", M_i);
+            return solution;
+        }
+        long long produit_am = a_i_reduit * M_i;
+        som += produit_am * (long long)inver_M_i;
+    }
+    solution = (int)som%N;
+    if (solution < 0)
+    {
+        solution += (int)N;
+    }
+    
+    return solution;
+}
+
 
 int main(int argc, char const *argv[])
 {
@@ -510,18 +561,41 @@ int main(int argc, char const *argv[])
     char *entier3 = "000111";
     char *entier4 = "1011";
     char *entier5 = "1101";
+    char *adya = "100111";
+    char *sarr = "1101";
     const int a = 252;//143
     const int b = 198;//23
     const int a1 = 143;
     const int b1 = 23;
     const int a2 = 17;
     const int b2 = 43;
+    parametres_TRC *params = malloc(sizeof(parametres_TRC));
+    if (!params) {
+        fprintf(stderr, "malloc: Erreur d'allocation pour les parametres TRC.\n");
+        return 1;
+    }
+    
+    params->les_n_i[0] = 2;
+    params->les_n_i[1] = 3;
+    params->les_n_i[2] = 5;
+    params->les_n_i[3] = 7;
+    params->les_n_i[4] = 11;
+    params->les_n_i[5] = 13;
+    params->les_n_i[6] = 17;
 
+
+    params->les_a_i[0] = 4;
+    params->les_a_i[1] = 34;
+    params->les_a_i[2] = 6;
+    params->les_a_i[3] = 20;
+    params->les_a_i[4] = 17;
+    params->les_a_i[5] = 19;
+    params->les_a_i[6] = 100;
     //Appel aux fonctions
     char *resultat_add = addition_binaire(entier1, entier2);
     char *complement_entier = complement_a_deux(entier,6);
     char *soustraction_sub = soustraction_avec_cpmt_deux(entier3, entier);
-    char *soustraction_na = soustraction_naive(entier3, entier);
+    char *soustraction_na = soustraction_naive(adya, sarr);
     int pgcd = algo_Euclide(a,b);
     int pgcd_ = algo_Euclide_accelerer(a1, b1);
     params_euclide_etendu *resultat_etendu = euclide_etendu(a, b);
@@ -529,6 +603,7 @@ int main(int argc, char const *argv[])
     int inv = inverse_mod(17, 43);
     int mult_karat = karatsuba(a,b);
     char *result_mult_naive = multiplication_naive_binaire(entier4, entier5);
+    int solution_TRC = solution_TR_Chinois(params);
 
     //Les tests pour les erreurs
     if (!resultat_add)
@@ -572,7 +647,7 @@ int main(int argc, char const *argv[])
     fprintf(stdout, "Addition: %s + %s = %s\n", entier1, entier2, resultat_add);
     fprintf(stdout, "Complement a deux: de %s est %s\n", entier, complement_entier);
     fprintf(stdout, "Soustraction avec complement a deux: %s - %s = %s\n", entier3, entier, soustraction_sub);
-    fprintf(stdout, "Soustraction naive: %s - %s = %s\n", entier3, entier, soustraction_na);
+    fprintf(stdout, "Soustraction naive: %s - %s = %s\n", adya, sarr, soustraction_na);
     fprintf(stdout, "PGCD(%d, %d) = %d\n", a, b, pgcd);
     fprintf(stdout, "Accelerer PGCD(%d, %d) = %d\n", a, b, pgcd_);
     affichage_param_euclide(resultat_etendu, a, b);
@@ -586,6 +661,7 @@ int main(int argc, char const *argv[])
     }
     fprintf(stdout, "La multiplication karatsuba: %d x %d = %d\n", a, b, mult_karat);
     fprintf(stdout, "La multiplication naive: %s x %s = %s\n", entier4, entier5, result_mult_naive);
+    fprintf(stdout, "La solution du Theorme des Restes de Chinois est: %d\n", solution_TRC);
     
 
     //Nettoyage totale 
@@ -596,5 +672,6 @@ int main(int argc, char const *argv[])
     free(resultat_etendu);
     free(result);
     free(result_mult_naive);
+    free(params);
     return 0;
 }

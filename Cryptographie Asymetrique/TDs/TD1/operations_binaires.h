@@ -1,6 +1,7 @@
 #if !defined(OPERATIONS_BINAIRES_H)
 #define OPERATIONS_BINAIRES_H
 #include <stdio.h>
+#define TAILLE_SYSTEME 7
 
 /**  Cette fonction permet de faire l'addition de deux entiers 
 *@param deux chaines de caracteres entier1 et entier2 mais en bianires
@@ -103,4 +104,21 @@ void affichage_param_euclide(params_euclide_etendu *resultat, const int a, const
  * @return l'inverse de l'entier si celui-ci existe sinon il retourne -1
  */
 int inverse_mod(const int entier,const int mod);
+
+
+/**
+ * La structure pour les parametres du calcul de la solution du systeme du Theoreme des Restes de Chinois
+ * Un tableau contenant les n_i et un tab contenant les parametres a_i
+ */
+typedef struct 
+{
+    int les_n_i[TAILLE_SYSTEME];
+    int les_a_i[TAILLE_SYSTEME];
+}parametres_TRC;
+
+/**
+ * @brief Cette fonction permet de donner la solution du Theoreme des Restes de Chinois(TRC)
+ * @param un pointeur vers les parametres du TRC
+ */
+int solution_TR_Chinois(parametres_TRC *params);
 #endif // OPERATIONS_BINAIRES_H
